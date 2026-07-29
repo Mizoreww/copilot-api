@@ -98,11 +98,22 @@ function extractAssistantText(content: Message["content"]): string {
 }
 
 function translateModelName(model: string): string {
+  const datedModel = model.match(
+    /^(claude-(?:opus|sonnet|haiku)-\d+)(?:-\d+)?-\d{8}$/,
+  )
+  if (datedModel) {
+    return datedModel[1]
+  }
+
   // Copilot exposes Claude models with dotted minor versions (e.g.
   // "claude-opus-4.8"), while Anthropic clients (Claude Code) send dashed IDs
   // ("claude-opus-4-8"). Rewrite the trailing "-N" minor version to ".N" so the
-  // requested model resolves. Mirrors upstream copilot-api normalization.
-  return model.replace(/^(claude-(?:opus|sonnet|haiku)-\d+)-(\d+)/, "$1.$2")
+  // requested model resolves. The exact match prevents an eight-digit release
+  // date from being mistaken for a minor version.
+  return model.replace(
+    /^(claude-(?:opus|sonnet|haiku)-\d+)-(\d{1,2})$/,
+    "$1.$2",
+  )
 }
 
 function translateAnthropicMessagesToOpenAI(
