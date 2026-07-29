@@ -1,5 +1,19 @@
 # Copilot API Proxy
 
+> [!NOTE]
+> **Maintained fork:** This repository is the `Mizoreww` compatibility fork
+> based on upstream `v0.7.0`. It keeps the locally verified fixes required for
+> current Claude Code usage:
+>
+> - Exact Opus 5 IDs remain unchanged, dashed minor versions are converted to
+>   Copilot's dotted form, and dated IDs fall back to their supported base model.
+> - Unsupported trailing assistant prefills are rewritten compatibly.
+> - Quiet streaming responses no longer reset after Bun's default 10-second
+>   idle timeout.
+>
+> Upstream remains available at
+> [`ericc-ch/copilot-api`](https://github.com/ericc-ch/copilot-api).
+
 > [!WARNING]
 > This is a reverse-engineered proxy of GitHub Copilot API. It is not supported by GitHub, and may break unexpectedly. Use at your own risk.
 
@@ -55,6 +69,31 @@ To install dependencies, run:
 
 ```sh
 bun install
+```
+
+### Install this maintained fork
+
+```sh
+git clone https://github.com/Mizoreww/copilot-api.git
+cd copilot-api
+bun install --frozen-lockfile
+bun run build
+bun dist/main.js start --account-type business --port 4141
+```
+
+For Claude Code direct mode, keep CC Switch routing disabled and use:
+
+```json
+{
+  "model": "opus",
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_MODEL": "claude-opus-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5[1M]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "claude-opus-5"
+  }
+}
 ```
 
 ## Using with Docker
@@ -116,25 +155,30 @@ The Docker image includes:
 - Health check for container monitoring
 - Pinned base image version for reproducible builds
 
-## Using with npx
+## Running this fork
 
-You can run the project directly using npx:
+This fork is not published to npm. Run the source-built executable so the local
+compatibility fixes are included:
 
 ```sh
-npx copilot-api@latest start
+bun dist/main.js start
 ```
 
 With options:
 
 ```sh
-npx copilot-api@latest start --port 8080
+bun dist/main.js start --port 8080
 ```
 
 For authentication only:
 
 ```sh
-npx copilot-api@latest auth
+bun dist/main.js auth
 ```
+
+> [!CAUTION]
+> `npx copilot-api@latest` installs the upstream npm release and does not include
+> this fork's fixes.
 
 ## Command Structure
 
@@ -211,59 +255,59 @@ New endpoints for monitoring your Copilot usage and quotas.
 
 ## Example Usage
 
-Using with npx:
+Run these examples from a built checkout of this fork:
 
 ```sh
 # Basic usage with start command
-npx copilot-api@latest start
+bun dist/main.js start
 
 # Run on custom port with verbose logging
-npx copilot-api@latest start --port 8080 --verbose
+bun dist/main.js start --port 8080 --verbose
 
 # Use with a business plan GitHub account
-npx copilot-api@latest start --account-type business
+bun dist/main.js start --account-type business
 
 # Use with an enterprise plan GitHub account
-npx copilot-api@latest start --account-type enterprise
+bun dist/main.js start --account-type enterprise
 
 # Enable manual approval for each request
-npx copilot-api@latest start --manual
+bun dist/main.js start --manual
 
 # Set rate limit to 30 seconds between requests
-npx copilot-api@latest start --rate-limit 30
+bun dist/main.js start --rate-limit 30
 
 # Wait instead of error when rate limit is hit
-npx copilot-api@latest start --rate-limit 30 --wait
+bun dist/main.js start --rate-limit 30 --wait
 
 # Provide GitHub token directly
-npx copilot-api@latest start --github-token ghp_YOUR_TOKEN_HERE
+bun dist/main.js start --github-token ghp_YOUR_TOKEN_HERE
 
 # Run only the auth flow
-npx copilot-api@latest auth
+bun dist/main.js auth
 
 # Run auth flow with verbose logging
-npx copilot-api@latest auth --verbose
+bun dist/main.js auth --verbose
 
 # Show your Copilot usage/quota in the terminal (no server needed)
-npx copilot-api@latest check-usage
+bun dist/main.js check-usage
 
 # Display debug information for troubleshooting
-npx copilot-api@latest debug
+bun dist/main.js debug
 
 # Display debug information in JSON format
-npx copilot-api@latest debug --json
+bun dist/main.js debug --json
 
 # Initialize proxy from environment variables (HTTP_PROXY, HTTPS_PROXY, etc.)
-npx copilot-api@latest start --proxy-env
+bun dist/main.js start --proxy-env
 ```
 
 ## Using the Usage Viewer
 
 After starting the server, a URL to the Copilot Usage Dashboard will be displayed in your console. This dashboard is a web interface for monitoring your API usage.
 
-1.  Start the server. For example, using npx:
+1.  Start the source-built server:
     ```sh
-    npx copilot-api@latest start
+    bun dist/main.js start
     ```
 2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
     `https://ericc-ch.github.io/copilot-api?endpoint=http://localhost:4141/usage`
@@ -289,7 +333,7 @@ There are two ways to configure Claude Code to use this proxy:
 To get started, run the `start` command with the `--claude-code` flag:
 
 ```sh
-npx copilot-api@latest start --claude-code
+bun dist/main.js start --claude-code
 ```
 
 You will be prompted to select a primary model and a "small, fast" model for background tasks. After selecting the models, a command will be copied to your clipboard. This command sets the necessary environment variables for Claude Code to use the proxy.
@@ -346,6 +390,6 @@ bun run start
 
 - To avoid hitting GitHub Copilot's rate limits, you can use the following flags:
   - `--manual`: Enables manual approval for each request, giving you full control over when requests are sent.
-  - `--rate-limit <seconds>`: Enforces a minimum time interval between requests. For example, `copilot-api start --rate-limit 30` will ensure there's at least a 30-second gap between requests.
+  - `--rate-limit <seconds>`: Enforces a minimum time interval between requests. For example, `bun dist/main.js start --rate-limit 30` will ensure there's at least a 30-second gap between requests.
   - `--wait`: Use this with `--rate-limit`. It makes the server wait for the cooldown period to end instead of rejecting the request with an error. This is useful for clients that don't automatically retry on rate limit errors.
 - If you have a GitHub business or enterprise plan account with Copilot, use the `--account-type` flag (e.g., `--account-type business`). See the [official documentation](https://docs.github.com/en/enterprise-cloud@latest/copilot/managing-copilot/managing-github-copilot-in-your-organization/managing-access-to-github-copilot-in-your-organization/managing-github-copilot-access-to-your-organizations-network#configuring-copilot-subscription-based-network-routing-for-your-enterprise-or-organization) for more details.

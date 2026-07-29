@@ -1,17 +1,18 @@
 {
   "name": "copilot-api",
-  "version": "0.7.0",
+  "version": "0.7.0-mizore.1",
+  "private": true,
   "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code!",
   "keywords": [
     "proxy",
     "github-copilot",
     "openai-compatible"
   ],
-  "homepage": "https://github.com/ericc-ch/copilot-api",
-  "bugs": "https://github.com/ericc-ch/copilot-api/issues",
+  "homepage": "https://github.com/Mizoreww/copilot-api",
+  "bugs": "https://github.com/Mizoreww/copilot-api/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ericc-ch/copilot-api.git"
+    "url": "git+https://github.com/Mizoreww/copilot-api.git"
   },
   "author": "Erick Christian <erickchristian48@gmail.com>",
   "type": "module",
@@ -29,7 +30,6 @@
     "lint:all": "eslint --cache .",
     "prepack": "bun run build",
     "prepare": "simple-git-hooks",
-    "release": "bumpp && bun publish --access public",
     "start": "NODE_ENV=production bun run ./src/main.ts",
     "typecheck": "tsc"
   },
@@ -56,7 +56,6 @@
     "@echristian/eslint-config": "^0.0.54",
     "@types/bun": "^1.2.23",
     "@types/proxy-from-env": "^1.0.4",
-    "bumpp": "^10.2.3",
     "eslint": "^9.37.0",
     "knip": "^5.64.1",
     "lint-staged": "^16.2.3",
