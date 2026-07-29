@@ -62,6 +62,27 @@ function isValidChatCompletionRequest(payload: unknown): boolean {
   return result.success
 }
 
+describe("Claude model ID normalization", () => {
+  test.each([
+    ["claude-opus-5", "claude-opus-5"],
+    ["claude-opus-4-8", "claude-opus-4.8"],
+    ["claude-opus-4.8", "claude-opus-4.8"],
+    ["claude-sonnet-4-20250514", "claude-sonnet-4"],
+    ["claude-opus-4-1-20250805", "claude-opus-4"],
+    ["gpt-4o", "gpt-4o"],
+  ])("should safely normalize model ID %s", (model, expected) => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model,
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 100,
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload)
+
+    expect(openAIPayload.model).toBe(expected)
+  })
+})
+
 describe("Anthropic to OpenAI translation logic", () => {
   test("should translate minimal Anthropic payload to valid OpenAI payload", () => {
     const anthropicPayload: AnthropicMessagesPayload = {
@@ -259,8 +280,20 @@ describe("Anthropic to OpenAI translation logic", () => {
     const openAIPayload = translateToOpenAI(anthropicPayload)
 
     const lastMessage = openAIPayload.messages.at(-1)
-    expect(lastMessage?.role).toBe("assistant")
-    expect(lastMessage?.tool_calls).toHaveLength(1)
+    expect(lastMessage).toEqual({
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        {
+          id: "call_123",
+          type: "function",
+          function: {
+            name: "get_weather",
+            arguments: '{"location":"New York"}',
+          },
+        },
+      ],
+    })
   })
 })
 
