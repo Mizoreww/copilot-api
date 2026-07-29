@@ -3,7 +3,7 @@
 import { defineCommand } from "citty"
 import clipboard from "clipboardy"
 import consola from "consola"
-import { serve, type ServerHandler } from "srvx"
+import { serve, type ServerHandler, type ServerOptions } from "srvx"
 import invariant from "tiny-invariant"
 
 import { ensurePaths } from "./lib/paths"
@@ -25,6 +25,21 @@ interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+}
+
+export const HTTP_IDLE_TIMEOUT_SECONDS = 255
+
+export function createServeOptions(
+  fetch: ServerHandler,
+  port: number,
+): ServerOptions {
+  return {
+    fetch,
+    port,
+    bun: {
+      idleTimeout: HTTP_IDLE_TIMEOUT_SECONDS,
+    },
+  }
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -114,10 +129,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     `🌐 Usage Viewer: https://ericc-ch.github.io/copilot-api?endpoint=${serverUrl}/usage`,
   )
 
-  serve({
-    fetch: server.fetch as ServerHandler,
-    port: options.port,
-  })
+  serve(createServeOptions(server.fetch as ServerHandler, options.port))
 }
 
 export const start = defineCommand({
