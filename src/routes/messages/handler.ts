@@ -7,6 +7,10 @@ import { awaitApproval } from "~/lib/approval"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import {
+  createAnthropicMessages,
+  type PassthroughPayload,
+} from "~/services/copilot/create-anthropic-messages"
+import {
   createChatCompletions,
   type ChatCompletionChunk,
   type ChatCompletionResponse,
@@ -27,6 +31,30 @@ export async function handleCompletion(c: Context) {
 
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
+
+  // Claude models: forward the native Anthropic request unchanged so that
+  // model name, thinking and output_config.effort reach Copilot.
+  if (
+    process.env.COPILOT_NATIVE_MESSAGES !== "0"
+    && anthropicPayload.model.startsWith("claude")
+  ) {
+    if (state.manualApprove) await awaitApproval()
+    const upstream = await createAnthropicMessages(
+      anthropicPayload as unknown as PassthroughPayload,
+      c.req.raw.headers,
+    )
+    // Upstream errors are returned unchanged so Claude Code sees the original
+    // error type and retry-after when deciding whether to retry.
+    const outHeaders = new Headers()
+    for (const name of ["content-type", "request-id", "retry-after"]) {
+      const value = upstream.headers.get(name)
+      if (value) outHeaders.set(name, value)
+    }
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: outHeaders,
+    })
+  }
 
   const openAIPayload = translateToOpenAI(anthropicPayload)
   consola.debug(
