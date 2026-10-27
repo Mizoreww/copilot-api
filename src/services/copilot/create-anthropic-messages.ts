@@ -1,73 +1,69 @@
 import consola from "consola"
 
 import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
+import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
-// Native Anthropic Messages passthrough to Copilot's /v1/messages.
-// Keeps model, thinking, output_config.effort, cache_control etc. intact,
-// which the OpenAI /chat/completions translation drops.
+// Forwards Anthropic Messages requests unchanged to Copilot's native
+// /v1/messages endpoint. The /chat/completions translation drops `thinking`
+// and `output_config.effort`.
 
-interface PassthroughMessage {
+interface NativeMessage {
   role: string
   content: unknown
 }
 
-interface ThinkingConfig {
-  type?: string
-  display?: string
-  [key: string]: unknown
-}
-
-export interface PassthroughPayload {
+export interface NativeMessagesPayload {
   model: string
-  messages: Array<PassthroughMessage>
-  thinking?: ThinkingConfig
+  messages: Array<NativeMessage>
+  thinking?: { type?: string; display?: string; [key: string]: unknown }
   output_config?: { effort?: string; [key: string]: unknown }
   [key: string]: unknown
 }
 
-export type ThinkingFix = (payload: PassthroughPayload) => void
+const FORWARDED_REQUEST_HEADERS = ["anthropic-version", "anthropic-beta"]
+const FORWARDED_RESPONSE_HEADERS = ["content-type", "request-id", "retry-after"]
 
-const FORWARDED_CLIENT_HEADERS = ["anthropic-version", "anthropic-beta"]
-
-// Clients choose the thinking type from the model ID they know, which may be
-// remapped (e.g. by cc-switch) to a Copilot model with different rules.
-// Learned per upstream model: thinking type -> rewrite.
-const learnedThinkingFixes = new Map<string, Map<string, ThinkingFix>>()
-
-export function thinkingFixFromError(
-  thinkingType: string,
-  errorMessage: string,
-): ThinkingFix | undefined {
-  const suggested = errorMessage.match(
-    /send "thinking": \{"type": "([a-z_]+)"\} instead of \{"type": "([a-z_]+)"\}/,
+// Copilot's /v1/messages rejects a trailing assistant message (prefill) for
+// current Claude models, so these requests keep the translation path.
+export function shouldUseNativeMessages(payload: {
+  model: string
+  messages: Array<{ role: string }>
+}): boolean {
+  return (
+    state.nativeMessages
+    && payload.model.startsWith("claude")
+    && payload.messages.at(-1)?.role !== "assistant"
   )
-  if (suggested && suggested[2] === thinkingType) {
-    const type = suggested[1]
-    return (payload) => {
-      payload.thinking = { type }
-    }
-  }
+}
 
-  if (
-    !errorMessage.includes(`"thinking.type.${thinkingType}" is not supported`)
-    || !errorMessage.includes(`"thinking.type.adaptive"`)
-  ) {
-    return undefined
-  }
+// Copilot names the accepted thinking type in one of two message shapes.
+const REPLACEMENT_TYPE =
+  /send "thinking": \{"type": "(?<accepted>[a-z_]+)"\} instead of \{"type": "(?<rejected>[a-z_]+)"\}/
+const REJECTED_TYPE = /"thinking\.type\.(?<rejected>[a-z_]+)" is not supported/
+const ACCEPTED_TYPE = /Use "thinking\.type\.(?<accepted>[a-z_]+)"/
 
-  if (thinkingType === "enabled") {
-    return (payload) => {
-      const display = payload.thinking?.display
-      payload.thinking = { type: "adaptive", ...(display ? { display } : {}) }
-    }
-  }
+export function acceptedThinkingType(
+  errorMessage: string,
+  thinkingType: string,
+): string | undefined {
+  const replacement = REPLACEMENT_TYPE.exec(errorMessage)?.groups
+  const rejected =
+    replacement?.rejected ?? REJECTED_TYPE.exec(errorMessage)?.groups?.rejected
+  const accepted =
+    replacement?.accepted ?? ACCEPTED_TYPE.exec(errorMessage)?.groups?.accepted
+  return rejected === thinkingType && accepted !== thinkingType ?
+      accepted
+    : undefined
+}
 
-  // The model cannot turn thinking off; low effort is the closest request.
-  return (payload) => {
-    payload.thinking = { type: "adaptive" }
-    payload.output_config = { ...payload.output_config, effort: "low" }
-  }
+// A client picks the thinking type from the model ID that it knows. A router
+// can map that ID to a Copilot model with other rules. Accepted types that
+// worked on a retry are cached per upstream model and requested type.
+const acceptedThinkingTypes = new Map<string, string>()
+
+function thinkingTypeKey(model: string, thinkingType: string): string {
+  return `${model}\u0000${thinkingType}`
 }
 
 function upstreamErrorMessage(errorText: string): string {
@@ -80,34 +76,38 @@ function upstreamErrorMessage(errorText: string): string {
   }
 }
 
-function isAgentCall(payload: PassthroughPayload): boolean {
-  return payload.messages.some(
-    (msg) =>
-      msg.role === "assistant"
-      || (Array.isArray(msg.content)
-        && msg.content.some(
-          (block) =>
-            typeof block === "object"
-            && block !== null
-            && (block as { type?: string }).type === "tool_result",
-        )),
+// Also looks inside nested content, e.g. images in tool_result blocks.
+function containsBlock(content: unknown, type: string): boolean {
+  return (
+    Array.isArray(content)
+    && content.some(
+      (block: unknown) =>
+        typeof block === "object"
+        && block !== null
+        && "type" in block
+        && (block.type === type
+          || ("content" in block && containsBlock(block.content, type))),
+    )
   )
 }
 
-function hasImage(payload: PassthroughPayload): boolean {
-  return payload.messages.some(
-    (msg) =>
-      Array.isArray(msg.content)
-      && msg.content.some(
-        (block) =>
-          typeof block === "object"
-          && block !== null
-          && (block as { type?: string }).type === "image",
-      ),
+function hasContentBlock(
+  payload: NativeMessagesPayload,
+  type: string,
+): boolean {
+  return payload.messages.some((message) =>
+    containsBlock(message.content, type),
   )
 }
 
-function describe(payload: PassthroughPayload): string {
+function isAgentCall(payload: NativeMessagesPayload): boolean {
+  return (
+    payload.messages.some((message) => message.role === "assistant")
+    || hasContentBlock(payload, "tool_result")
+  )
+}
+
+function requestSummary(payload: NativeMessagesPayload): string {
   return (
     `model=${payload.model}`
     + ` thinking=${JSON.stringify(payload.thinking ?? null)}`
@@ -115,16 +115,29 @@ function describe(payload: PassthroughPayload): string {
   )
 }
 
-async function send(
-  payload: PassthroughPayload,
+function rewriteThinkingType(
+  payload: NativeMessagesPayload,
+  type: string,
+  reason: string,
+): void {
+  const before = requestSummary(payload)
+  const display = payload.thinking?.display
+  payload.thinking = { type, ...(display ? { display } : {}) }
+  consola.info(
+    `Native /v1/messages: ${reason}: ${before} -> ${requestSummary(payload)}`,
+  )
+}
+
+function postMessages(
+  payload: NativeMessagesPayload,
   clientHeaders: Headers,
 ): Promise<Response> {
   const headers: Record<string, string> = {
-    ...copilotHeaders(state, hasImage(payload)),
+    ...copilotHeaders(state, hasContentBlock(payload, "image")),
     "X-Initiator": isAgentCall(payload) ? "agent" : "user",
     "anthropic-version": "2023-06-01",
   }
-  for (const name of FORWARDED_CLIENT_HEADERS) {
+  for (const name of FORWARDED_REQUEST_HEADERS) {
     const value = clientHeaders.get(name)
     if (value) headers[name] = value
   }
@@ -136,61 +149,54 @@ async function send(
 }
 
 export async function createAnthropicMessages(
-  payload: PassthroughPayload,
+  payload: NativeMessagesPayload,
   clientHeaders: Headers,
 ): Promise<Response> {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
-  const originalType = payload.thinking?.type
-  const learned =
-    originalType ?
-      learnedThinkingFixes.get(payload.model)?.get(originalType)
+  const thinkingType = payload.thinking?.type
+  const cachedType =
+    thinkingType ?
+      acceptedThinkingTypes.get(thinkingTypeKey(payload.model, thinkingType))
     : undefined
-  if (learned) {
-    const before = describe(payload)
-    learned(payload)
-    consola.info(
-      `Native /v1/messages: rewrote ${before} -> ${describe(payload)}`,
-    )
-  }
+  if (cachedType) rewriteThinkingType(payload, cachedType, "cached rewrite")
 
-  consola.info(`Native /v1/messages: ${describe(payload)}`)
-  const response = await send(payload, clientHeaders)
-  if (response.ok) return response
+  consola.info(`Native /v1/messages: ${requestSummary(payload)}`)
+  let response = await postMessages(payload, clientHeaders)
 
-  const errorText = await response.text()
-  const fix =
-    originalType && !learned ?
-      thinkingFixFromError(originalType, upstreamErrorMessage(errorText))
+  const retryType =
+    response.status === 400 && thinkingType && !cachedType ?
+      acceptedThinkingType(
+        upstreamErrorMessage(await response.clone().text()),
+        thinkingType,
+      )
     : undefined
-
-  if (!fix) {
-    consola.error(
-      `Failed native /v1/messages: HTTP ${response.status}`,
-      errorText,
-    )
-    return new Response(errorText, {
-      status: response.status,
-      headers: response.headers,
-    })
+  if (retryType && thinkingType) {
+    rewriteThinkingType(payload, retryType, "retry after upstream rejection")
+    response = await postMessages(payload, clientHeaders)
+    if (response.ok) {
+      acceptedThinkingTypes.set(
+        thinkingTypeKey(payload.model, thinkingType),
+        retryType,
+      )
+    }
   }
 
-  const fixes =
-    learnedThinkingFixes.get(payload.model) ?? new Map<string, ThinkingFix>()
-  fixes.set(originalType as string, fix)
-  learnedThinkingFixes.set(payload.model, fixes)
-
-  const before = describe(payload)
-  fix(payload)
-  consola.info(
-    `Native /v1/messages: upstream rejected ${before}; retrying as ${describe(payload)}`,
-  )
-  const retried = await send(payload, clientHeaders)
-  if (!retried.ok) {
+  if (!response.ok) {
     consola.error(
-      `Failed native /v1/messages after retry: HTTP ${retried.status}`,
-      await retried.clone().text(),
+      `Failed to create Anthropic messages: HTTP ${response.status}`,
+      await response.clone().text(),
     )
+    throw new HTTPError("Failed to create Anthropic messages", response)
   }
-  return retried
+  return response
+}
+
+export function toClientResponse(upstream: Response): Response {
+  const headers = new Headers()
+  for (const name of FORWARDED_RESPONSE_HEADERS) {
+    const value = upstream.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+  return new Response(upstream.body, { status: upstream.status, headers })
 }

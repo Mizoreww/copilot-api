@@ -4,11 +4,14 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
+import { HTTPError } from "~/lib/error"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import {
   createAnthropicMessages,
-  type PassthroughPayload,
+  shouldUseNativeMessages,
+  toClientResponse,
+  type NativeMessagesPayload,
 } from "~/services/copilot/create-anthropic-messages"
 import {
   createChatCompletions,
@@ -32,28 +35,8 @@ export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
-  // Claude models: forward the native Anthropic request unchanged so that
-  // model name, thinking and output_config.effort reach Copilot.
-  if (
-    process.env.COPILOT_NATIVE_MESSAGES !== "0"
-    && anthropicPayload.model.startsWith("claude")
-  ) {
-    if (state.manualApprove) await awaitApproval()
-    const upstream = await createAnthropicMessages(
-      anthropicPayload as unknown as PassthroughPayload,
-      c.req.raw.headers,
-    )
-    // Upstream errors are returned unchanged so Claude Code sees the original
-    // error type and retry-after when deciding whether to retry.
-    const outHeaders = new Headers()
-    for (const name of ["content-type", "request-id", "retry-after"]) {
-      const value = upstream.headers.get(name)
-      if (value) outHeaders.set(name, value)
-    }
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: outHeaders,
-    })
+  if (shouldUseNativeMessages(anthropicPayload)) {
+    return handleNativeCompletion(c)
   }
 
   const openAIPayload = translateToOpenAI(anthropicPayload)
@@ -112,6 +95,24 @@ export async function handleCompletion(c: Context) {
       }
     }
   })
+}
+
+async function handleNativeCompletion(c: Context): Promise<Response> {
+  if (state.manualApprove) {
+    await awaitApproval()
+  }
+
+  const payload = await c.req.json<NativeMessagesPayload>()
+  try {
+    return toClientResponse(
+      await createAnthropicMessages(payload, c.req.raw.headers),
+    )
+  } catch (error) {
+    // Upstream errors keep their status, body and retry-after so that the
+    // client can decide whether to retry.
+    if (error instanceof HTTPError) return toClientResponse(error.response)
+    throw error
+  }
 }
 
 const isNonStreaming = (

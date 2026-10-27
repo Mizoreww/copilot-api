@@ -25,6 +25,7 @@ interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+  nativeMessages: boolean
 }
 
 export const HTTP_IDLE_TIMEOUT_SECONDS = 255
@@ -61,6 +62,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
+  state.nativeMessages = options.nativeMessages
 
   await ensurePaths()
   await cacheVSCodeVersion()
@@ -196,6 +198,12 @@ export const start = defineCommand({
       default: false,
       description: "Initialize proxy from environment variables",
     },
+    "native-messages": {
+      type: "boolean",
+      default: true,
+      description:
+        "Translate Claude models via /chat/completions instead of native /v1/messages",
+    },
   },
   run({ args }) {
     const rateLimitRaw = args["rate-limit"]
@@ -214,6 +222,7 @@ export const start = defineCommand({
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
+      nativeMessages: args["native-messages"],
     })
   },
 })
