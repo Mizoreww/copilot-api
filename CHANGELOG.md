@@ -16,7 +16,8 @@
   request is retried once with the type that the error names: `enabled` and
   `disabled` become `adaptive` on Opus 5.5, `disabled` becomes `between_tools`
   on Sonnet 5.5. The effort is not changed. The accepted type is cached per
-  upstream model after a successful retry.
+  upstream model after a successful retry, and a cached type that Copilot
+  rejects later is dropped and replaced.
 
 ### Design Rationale
 
@@ -26,8 +27,10 @@
   tokens for `reasoning_effort` low / high / unset, so effort has no effect on
   the translation path.
 - `/responses` rejects Claude models (`unsupported_api_for_model`).
-- `/v1/messages` accepts both `claude-opus-5.5` and `claude-opus-5-5`, and
-  dated IDs, so no model-name rewriting is applied on this path.
+- `/v1/messages` accepts dotted, dashed and dated IDs of the models that
+  Copilot offers (for example `claude-opus-5.5`, `claude-opus-4-8`,
+  `claude-haiku-4-5-20251001`), so no model-name rewriting is applied on this
+  path. It ignores unknown `anthropic-beta` values.
 - Clients pick the thinking type from the model ID they know. Routers such as
   cc-switch map Claude Desktop IDs (`claude-fable-5`, `claude-opus-5`,
   `claude-sonnet-5`, `claude-haiku-4-5`) to `claude-opus-5-5` or
