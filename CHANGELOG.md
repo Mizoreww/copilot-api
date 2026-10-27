@@ -12,6 +12,12 @@
 - Upstream errors on this path are returned with their original status, body
   and `retry-after` header.
 - Set `COPILOT_NATIVE_MESSAGES=0` to restore the translation path.
+- When Copilot rejects the request's `thinking.type` with HTTP 400, the
+  request is retried once with the type named in the error message, and the
+  rewrite is remembered per upstream model for later requests:
+  `enabled` becomes `adaptive`; `disabled` becomes the suggested type
+  (`between_tools` on Sonnet 5.5), or `adaptive` with effort `low` when the
+  model has no way to turn thinking off (Opus 5.5).
 
 ### Design Rationale
 
@@ -23,11 +29,24 @@
 - `/responses` rejects Claude models (`unsupported_api_for_model`).
 - `/v1/messages` accepts both `claude-opus-5.5` and `claude-opus-5-5`, and
   dated IDs, so no model-name rewriting is applied on this path.
+- Clients pick the thinking type from the model ID they know. Routers such as
+  cc-switch map Claude Desktop IDs (`claude-fable-5`, `claude-opus-5`,
+  `claude-sonnet-5`, `claude-haiku-4-5`) to `claude-opus-5-5` or
+  `claude-sonnet-5-5`, whose rules differ. Accepted thinking types measured on
+  2026-10-27: Opus 5.5 accepts omitted and `adaptive`; Sonnet 5.5 accepts
+  omitted, `adaptive` and `between_tools`; Haiku 5.5 accepts omitted,
+  `adaptive` and `disabled`. All three reject `enabled`. The rewrite follows
+  the upstream error text instead of a fixed model table.
 
 ### Notes & Caveats
 
 - `thinking: {type: "enabled", budget_tokens}` is rejected by Opus 5.5 with
-  HTTP 400; clients must send `adaptive` plus `output_config.effort`.
+  HTTP 400; the retry above converts it to `adaptive`.
+- The first request per model and thinking type still costs one rejected
+  upstream call before the rewrite is remembered; the cache is in memory and
+  is cleared on restart.
+- A client that maps `claude-haiku-4-5` to an Opus model sends no
+  `output_config.effort`, so the client's effort setting has no effect there.
 - Non-Claude models and `/v1/messages/count_tokens` still use the translation
   path.
 - Whether Copilot counts premium requests differently on `/v1/messages` has not
