@@ -9,8 +9,9 @@
   translated to `/chat/completions`. Model name, `thinking`,
   `output_config.effort`, `cache_control`, `anthropic-beta` and
   `anthropic-version` now reach Copilot.
-- Upstream errors on this path keep their original status, body and
-  `retry-after` header.
+- Upstream errors on this path keep their original status and body. The
+  `retry-after` and `x-should-retry` headers are forwarded for client retries,
+  and `cache-control` for streaming responses.
 - `--no-native-messages` restores the translation path for Claude models.
 - When Copilot rejects the request's `thinking.type` with HTTP 400, the
   request is retried once with the type that the error names: `enabled` and
