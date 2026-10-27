@@ -9,15 +9,14 @@
   translated to `/chat/completions`. Model name, `thinking`,
   `output_config.effort`, `cache_control`, `anthropic-beta` and
   `anthropic-version` now reach Copilot.
-- Upstream errors on this path are returned with their original status, body
-  and `retry-after` header.
-- Set `COPILOT_NATIVE_MESSAGES=0` to restore the translation path.
+- Upstream errors on this path keep their original status, body and
+  `retry-after` header.
+- `--no-native-messages` restores the translation path for Claude models.
 - When Copilot rejects the request's `thinking.type` with HTTP 400, the
-  request is retried once with the type named in the error message, and the
-  rewrite is remembered per upstream model for later requests:
-  `enabled` becomes `adaptive`; `disabled` becomes the suggested type
-  (`between_tools` on Sonnet 5.5), or `adaptive` with effort `low` when the
-  model has no way to turn thinking off (Opus 5.5).
+  request is retried once with the type that the error names: `enabled` and
+  `disabled` become `adaptive` on Opus 5.5, `disabled` becomes `between_tools`
+  on Sonnet 5.5. The effort is not changed. The accepted type is cached per
+  upstream model after a successful retry.
 
 ### Design Rationale
 
@@ -37,20 +36,30 @@
   omitted, `adaptive` and `between_tools`; Haiku 5.5 accepts omitted,
   `adaptive` and `disabled`. All three reject `enabled`. The rewrite follows
   the upstream error text instead of a fixed model table.
+- Copilot's `/v1/messages` rejects a trailing assistant prefill on Opus 5.5
+  and Sonnet 5.5, so these requests keep the translation path and its prefill
+  rewrite.
+- Billing: both endpoints return a `copilot_usage` object with the same
+  `claude-opus-5.5` price table (per 1M tokens: input 400, output 2000,
+  cache read 20, cache write 500 AI credits). For the same
+  prompt of about 94k tokens, `/chat/completions` reported 46.94 AI credits
+  because Copilot billed the prompt as a cache write, and `/v1/messages`
+  reported 37.53 AI credits as plain input. The usage counter matched the
+  `/v1/messages` value (75 credits for two requests) but showed 239 credits for
+  two `/chat/completions` requests. The cause of that difference has not been
+  determined.
 
 ### Notes & Caveats
 
-- `thinking: {type: "enabled", budget_tokens}` is rejected by Opus 5.5 with
-  HTTP 400; the retry above converts it to `adaptive`.
 - The first request per model and thinking type still costs one rejected
-  upstream call before the rewrite is remembered; the cache is in memory and
+  upstream call before the accepted type is cached; the cache is in memory and
   is cleared on restart.
 - A client that maps `claude-haiku-4-5` to an Opus model sends no
   `output_config.effort`, so the client's effort setting has no effect there.
-- Non-Claude models and `/v1/messages/count_tokens` still use the translation
-  path.
-- Whether Copilot counts premium requests differently on `/v1/messages` has not
-  been verified.
+- Non-Claude models, `/v1/messages/count_tokens` and requests that end with an
+  assistant message still use the translation path.
+- The usage counter reports charges with a delay of one to more than ten
+  minutes, so per-request billing cannot be read right after a request.
 
 ## [0.7.0-mizore.1] - 2026-07-29
 
