@@ -239,7 +239,10 @@ describe("POST /v1/messages", () => {
     mockFetch(
       new Response(events, {
         status: 200,
-        headers: { "content-type": "text/event-stream" },
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+        },
       }),
     )
     const body = { ...payload("adaptive"), max_tokens: 16, stream: true }
@@ -247,6 +250,7 @@ describe("POST /v1/messages", () => {
     expect(calls[0].url).toEndWith("/v1/messages")
     expect(sentBody(0)).toEqual(body)
     expect(response.headers.get("content-type")).toBe("text/event-stream")
+    expect(response.headers.get("cache-control")).toBe("no-cache")
     expect(await response.text()).toBe(events)
   })
 
@@ -254,7 +258,11 @@ describe("POST /v1/messages", () => {
     mockFetch(
       new Response('{"type":"error"}', {
         status: 429,
-        headers: { "content-type": "application/json", "retry-after": "7" },
+        headers: {
+          "content-type": "application/json",
+          "retry-after": "7",
+          "x-should-retry": "true",
+        },
       }),
     )
     const response = await requestMessages({
@@ -263,6 +271,7 @@ describe("POST /v1/messages", () => {
     })
     expect(response.status).toBe(429)
     expect(response.headers.get("retry-after")).toBe("7")
+    expect(response.headers.get("x-should-retry")).toBe("true")
     expect(await response.text()).toBe('{"type":"error"}')
   })
 

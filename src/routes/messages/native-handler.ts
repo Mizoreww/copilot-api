@@ -6,7 +6,13 @@ import {
 } from "~/services/copilot/create-native-messages"
 
 const FORWARDED_REQUEST_HEADERS = ["anthropic-version", "anthropic-beta"]
-const FORWARDED_RESPONSE_HEADERS = ["content-type", "request-id", "retry-after"]
+// retry-after and x-should-retry are the retry signals that Anthropic SDKs read.
+const FORWARDED_RESPONSE_HEADERS = [
+  "content-type",
+  "cache-control",
+  "retry-after",
+  "x-should-retry",
+]
 
 // Copilot's /v1/messages rejects a trailing assistant message (prefill) for
 // current Claude models, so these requests keep the translation path.
