@@ -8,7 +8,7 @@ import {
   createNativeMessages,
   type NativeMessagesPayload,
 } from "~/services/copilot/create-native-messages"
-import { acceptedThinkingTypes } from "~/services/copilot/thinking-type"
+import { thinkingTypeReplacements } from "~/services/copilot/thinking-type"
 
 import {
   ENABLED_REJECTED,
@@ -60,7 +60,7 @@ function payload(thinkingType: string): NativeMessagesPayload {
   }
 }
 
-function postMessages(body: unknown): Promise<Response> {
+function requestMessages(body: unknown): Promise<Response> {
   return Promise.resolve(
     server.request("/v1/messages", {
       method: "POST",
@@ -75,7 +75,7 @@ beforeEach(() => {
   state.vsCodeVersion = "1.0.0"
   state.accountType = "individual"
   state.nativeMessages = true
-  acceptedThinkingTypes.clear()
+  thinkingTypeReplacements.clear()
 })
 
 afterEach(() => {
@@ -86,10 +86,9 @@ describe("createNativeMessages", () => {
   test("forwards the payload and the beta header unchanged", async () => {
     mockFetch(jsonResponse({ type: "message" }))
     const body = { ...payload("adaptive"), max_tokens: 16 }
-    await createNativeMessages(
-      body,
-      new Headers({ "anthropic-beta": "context-1m-2025-08-07" }),
-    )
+    await createNativeMessages(body, {
+      "anthropic-beta": "context-1m-2025-08-07",
+    })
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe("https://api.githubcopilot.com/v1/messages")
     expect(sentBody(0)).toEqual(body)
@@ -106,13 +105,13 @@ describe("createNativeMessages", () => {
       jsonResponse({ type: "message" }),
     )
     const original = payload("disabled")
-    await createNativeMessages(original, new Headers())
+    await createNativeMessages(original, {})
     expect(calls).toHaveLength(2)
     expect(sentBody(1).thinking).toEqual({ type: "adaptive" })
     expect(sentBody(1).output_config).toEqual({ effort: "high" })
     expect(original.thinking).toEqual({ type: "disabled" })
 
-    await createNativeMessages(payload("disabled"), new Headers())
+    await createNativeMessages(payload("disabled"), {})
     expect(calls).toHaveLength(3)
     expect(sentBody(2).thinking).toEqual({ type: "adaptive" })
   })
@@ -124,13 +123,12 @@ describe("createNativeMessages", () => {
       rejection(OPUS_DISABLED_REJECTED),
       jsonResponse({ type: "message" }),
     )
-    const failed = await createNativeMessages(
-      payload("disabled"),
-      new Headers(),
-    ).catch((error: unknown) => error)
+    const failed = await createNativeMessages(payload("disabled"), {}).catch(
+      (error: unknown) => error,
+    )
     expect(failed).toBeInstanceOf(HTTPError)
 
-    await createNativeMessages(payload("disabled"), new Headers())
+    await createNativeMessages(payload("disabled"), {})
     expect(calls).toHaveLength(4)
     expect(sentBody(2).thinking).toEqual({ type: "disabled" })
   })
@@ -141,7 +139,7 @@ describe("createNativeMessages", () => {
       ...payload("enabled"),
       thinking: { type: "enabled", budget_tokens: 1024, display: "summarized" },
     }
-    await createNativeMessages(body, new Headers())
+    await createNativeMessages(body, {})
     expect(sentBody(1).thinking).toEqual({
       type: "adaptive",
       display: "summarized",
@@ -158,9 +156,9 @@ describe("createNativeMessages", () => {
       jsonResponse({ type: "message" }),
       jsonResponse({ type: "message" }),
     )
-    await createNativeMessages(payload("disabled"), new Headers())
-    await createNativeMessages(payload("disabled"), new Headers())
-    await createNativeMessages(payload("disabled"), new Headers())
+    await createNativeMessages(payload("disabled"), {})
+    await createNativeMessages(payload("disabled"), {})
+    await createNativeMessages(payload("disabled"), {})
     expect(calls).toHaveLength(5)
     expect(sentBody(2).thinking).toEqual({ type: "adaptive" })
     expect(sentBody(3).thinking).toEqual({ type: "between_tools" })
@@ -169,10 +167,9 @@ describe("createNativeMessages", () => {
 
   test("does not retry other errors", async () => {
     mockFetch(jsonResponse({ type: "error" }, 429))
-    const failed = await createNativeMessages(
-      payload("disabled"),
-      new Headers(),
-    ).catch((error: unknown) => error)
+    const failed = await createNativeMessages(payload("disabled"), {}).catch(
+      (error: unknown) => error,
+    )
     expect(failed).toBeInstanceOf(HTTPError)
     expect(calls).toHaveLength(1)
   })
@@ -200,7 +197,7 @@ describe("createNativeMessages", () => {
           },
         ],
       },
-      new Headers(),
+      {},
     )
     expect(calls[0].init.headers["X-Initiator"]).toBe("agent")
     expect(calls[0].init.headers["copilot-vision-request"]).toBe("true")
@@ -246,7 +243,7 @@ describe("POST /v1/messages", () => {
       }),
     )
     const body = { ...payload("adaptive"), max_tokens: 16, stream: true }
-    const response = await postMessages(body)
+    const response = await requestMessages(body)
     expect(calls[0].url).toEndWith("/v1/messages")
     expect(sentBody(0)).toEqual(body)
     expect(response.headers.get("content-type")).toBe("text/event-stream")
@@ -260,7 +257,7 @@ describe("POST /v1/messages", () => {
         headers: { "content-type": "application/json", "retry-after": "7" },
       }),
     )
-    const response = await postMessages({
+    const response = await requestMessages({
       ...payload("adaptive"),
       max_tokens: 16,
     })
@@ -287,7 +284,7 @@ describe("POST /v1/messages", () => {
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
     )
-    const response = await postMessages({
+    const response = await requestMessages({
       model: "gpt-4.1",
       max_tokens: 16,
       messages: [{ role: "user", content: "hi" }],

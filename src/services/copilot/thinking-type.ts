@@ -13,7 +13,7 @@ export interface ThinkingRejection {
   accepted: string | undefined
 }
 
-function errorMessage(errorBody: string): string {
+function readErrorMessage(errorBody: string): string {
   try {
     const parsed = JSON.parse(errorBody) as { error?: { message?: unknown } }
     const message = parsed.error?.message
@@ -23,10 +23,10 @@ function errorMessage(errorBody: string): string {
   }
 }
 
-export function thinkingRejection(
+export function parseThinkingRejection(
   errorBody: string,
 ): ThinkingRejection | undefined {
-  const message = errorMessage(errorBody)
+  const message = readErrorMessage(errorBody)
   const replacement = REPLACEMENT_PATTERN.exec(message)?.groups
   const rejected =
     replacement?.rejected ?? REJECTED_PATTERN.exec(message)?.groups?.rejected
@@ -37,28 +37,45 @@ export function thinkingRejection(
 }
 
 // A client picks the thinking type from the model ID that it knows. A router
-// can map that ID to a Copilot model with other rules. The cache holds the
-// accepted type per upstream model and requested type.
-class AcceptedThinkingTypes {
+// can map that ID to a Copilot model with other rules. This keeps, per
+// upstream model, the type to send instead of a requested type.
+export interface ThinkingRequest {
+  model: string
+  requested: string
+}
+
+class ThinkingTypeReplacements {
   readonly #byModel = new Map<string, Map<string, string>>()
 
-  get(model: string, thinkingType: string): string | undefined {
-    return this.#byModel.get(model)?.get(thinkingType)
+  typeToSend({ model, requested }: ThinkingRequest): string {
+    return this.#byModel.get(model)?.get(requested) ?? requested
   }
 
-  set(model: string, thinkingType: string, accepted: string): void {
-    const types = this.#byModel.get(model) ?? new Map<string, string>()
-    types.set(thinkingType, accepted)
-    this.#byModel.set(model, types)
+  // Call after HTTP 400. Forgets a replacement that Copilot now rejects and
+  // returns the type that the error names, if there is one.
+  retryType(
+    { model, requested }: ThinkingRequest,
+    sent: string,
+    errorBody: string,
+  ): string | undefined {
+    const rejection = parseThinkingRejection(errorBody)
+    if (rejection?.rejected !== sent) return undefined
+    this.#byModel.get(model)?.delete(requested)
+    return rejection.accepted === sent ? undefined : rejection.accepted
   }
 
-  delete(model: string, thinkingType: string): void {
-    this.#byModel.get(model)?.delete(thinkingType)
+  // Call after a retry with `accepted` succeeds.
+  remember({ model, requested }: ThinkingRequest, accepted: string): void {
+    if (accepted === requested) return
+    const replacements = this.#byModel.get(model) ?? new Map<string, string>()
+    replacements.set(requested, accepted)
+    this.#byModel.set(model, replacements)
   }
 
+  // The cache lives for the process. Tests reset it between cases.
   clear(): void {
     this.#byModel.clear()
   }
 }
 
-export const acceptedThinkingTypes = new AcceptedThinkingTypes()
+export const thinkingTypeReplacements = new ThinkingTypeReplacements()

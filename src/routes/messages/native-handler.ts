@@ -1,4 +1,3 @@
-import { awaitApproval } from "~/lib/approval"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 import {
@@ -6,6 +5,7 @@ import {
   type NativeMessagesPayload,
 } from "~/services/copilot/create-native-messages"
 
+const FORWARDED_REQUEST_HEADERS = ["anthropic-version", "anthropic-beta"]
 const FORWARDED_RESPONSE_HEADERS = ["content-type", "request-id", "retry-after"]
 
 // Copilot's /v1/messages rejects a trailing assistant message (prefill) for
@@ -20,25 +20,35 @@ export function shouldUseNativeMessages(
   )
 }
 
-function toClientResponse(upstream: Response): Response {
-  const headers = new Headers()
-  for (const name of FORWARDED_RESPONSE_HEADERS) {
-    const value = upstream.headers.get(name)
-    if (value) headers.set(name, value)
+function pickHeaders(
+  headers: Headers,
+  names: Array<string>,
+): Record<string, string> {
+  const picked: Record<string, string> = {}
+  for (const name of names) {
+    const value = headers.get(name)
+    if (value) picked[name] = value
   }
-  return new Response(upstream.body, { status: upstream.status, headers })
+  return picked
+}
+
+function toClientResponse(upstream: Response): Response {
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: pickHeaders(upstream.headers, FORWARDED_RESPONSE_HEADERS),
+  })
 }
 
 export async function handleNativeCompletion(
   payload: NativeMessagesPayload,
   clientHeaders: Headers,
 ): Promise<Response> {
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
-
   try {
-    return toClientResponse(await createNativeMessages(payload, clientHeaders))
+    const upstream = await createNativeMessages(
+      payload,
+      pickHeaders(clientHeaders, FORWARDED_REQUEST_HEADERS),
+    )
+    return toClientResponse(upstream)
   } catch (error) {
     // Upstream errors keep their status, body and retry-after so that the
     // client can decide whether to retry.

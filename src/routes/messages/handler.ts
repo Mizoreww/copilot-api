@@ -32,6 +32,10 @@ export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
+  if (state.manualApprove) {
+    await awaitApproval()
+  }
+
   if (shouldUseNativeMessages(anthropicPayload)) {
     return handleNativeCompletion(anthropicPayload, c.req.raw.headers)
   }
@@ -41,10 +45,6 @@ export async function handleCompletion(c: Context) {
     "Translated OpenAI request payload:",
     JSON.stringify(openAIPayload),
   )
-
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
 
   const response = await createChatCompletions(openAIPayload)
 
