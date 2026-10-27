@@ -4,15 +4,8 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import { HTTPError } from "~/lib/error"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
-import {
-  createAnthropicMessages,
-  shouldUseNativeMessages,
-  toClientResponse,
-  type NativeMessagesPayload,
-} from "~/services/copilot/create-anthropic-messages"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -23,6 +16,10 @@ import {
   type AnthropicMessagesPayload,
   type AnthropicStreamState,
 } from "./anthropic-types"
+import {
+  handleNativeCompletion,
+  shouldUseNativeMessages,
+} from "./native-handler"
 import {
   translateToAnthropic,
   translateToOpenAI,
@@ -36,7 +33,7 @@ export async function handleCompletion(c: Context) {
   consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
   if (shouldUseNativeMessages(anthropicPayload)) {
-    return handleNativeCompletion(c)
+    return handleNativeCompletion(anthropicPayload, c.req.raw.headers)
   }
 
   const openAIPayload = translateToOpenAI(anthropicPayload)
@@ -95,24 +92,6 @@ export async function handleCompletion(c: Context) {
       }
     }
   })
-}
-
-async function handleNativeCompletion(c: Context): Promise<Response> {
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
-
-  const payload = await c.req.json<NativeMessagesPayload>()
-  try {
-    return toClientResponse(
-      await createAnthropicMessages(payload, c.req.raw.headers),
-    )
-  } catch (error) {
-    // Upstream errors keep their status, body and retry-after so that the
-    // client can decide whether to retry.
-    if (error instanceof HTTPError) return toClientResponse(error.response)
-    throw error
-  }
 }
 
 const isNonStreaming = (

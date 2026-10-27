@@ -2,16 +2,19 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
+import { shouldUseNativeMessages } from "~/routes/messages/native-handler"
 import { server } from "~/server"
 import {
-  createAnthropicMessages,
-  shouldUseNativeMessages,
-  toClientResponse,
+  createNativeMessages,
   type NativeMessagesPayload,
-} from "~/services/copilot/create-anthropic-messages"
+} from "~/services/copilot/create-native-messages"
+import { acceptedThinkingTypes } from "~/services/copilot/thinking-type"
 
-const OPUS_DISABLED_REJECTED =
-  '"thinking.type.disabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.'
+import {
+  ENABLED_REJECTED,
+  errorBody,
+  OPUS_DISABLED_REJECTED,
+} from "./fixtures/thinking-errors"
 
 interface FetchInit {
   headers: Record<string, string>
@@ -37,25 +40,34 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-function thinkingError(message: string): Response {
-  return jsonResponse(
-    { type: "error", error: { type: "invalid_request_error", message } },
-    400,
-  )
+function rejection(message: string): Response {
+  return new Response(errorBody(message), {
+    status: 400,
+    headers: { "content-type": "application/json" },
+  })
 }
 
-function sentBody(index: number): NativeMessagesPayload {
-  return JSON.parse(calls[index].init.body) as NativeMessagesPayload
+function sentBody(index: number): Record<string, unknown> {
+  return JSON.parse(calls[index].init.body) as Record<string, unknown>
 }
 
-function payload(model: string, thinkingType: string): NativeMessagesPayload {
+function payload(thinkingType: string): NativeMessagesPayload {
   return {
-    model,
-    max_tokens: 16,
+    model: "claude-opus-5-5",
     messages: [{ role: "user", content: "hi" }],
     thinking: { type: thinkingType },
     output_config: { effort: "high" },
   }
+}
+
+function postMessages(body: unknown): Promise<Response> {
+  return Promise.resolve(
+    server.request("/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  )
 }
 
 beforeEach(() => {
@@ -63,22 +75,24 @@ beforeEach(() => {
   state.vsCodeVersion = "1.0.0"
   state.accountType = "individual"
   state.nativeMessages = true
+  acceptedThinkingTypes.clear()
 })
 
 afterEach(() => {
   globalThis.fetch = realFetch
 })
 
-describe("createAnthropicMessages", () => {
-  test("forwards model, thinking, effort and beta headers unchanged", async () => {
+describe("createNativeMessages", () => {
+  test("forwards the payload and the beta header unchanged", async () => {
     mockFetch(jsonResponse({ type: "message" }))
-    await createAnthropicMessages(
-      payload("claude-opus-5-5", "adaptive"),
+    const body = { ...payload("adaptive"), max_tokens: 16 }
+    await createNativeMessages(
+      body,
       new Headers({ "anthropic-beta": "context-1m-2025-08-07" }),
     )
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe("https://api.githubcopilot.com/v1/messages")
-    expect(sentBody(0)).toEqual(payload("claude-opus-5-5", "adaptive"))
+    expect(sentBody(0)).toEqual(body)
     expect(calls[0].init.headers["anthropic-beta"]).toBe(
       "context-1m-2025-08-07",
     )
@@ -87,69 +101,85 @@ describe("createAnthropicMessages", () => {
 
   test("retries once with the accepted type and caches it after success", async () => {
     mockFetch(
-      thinkingError(OPUS_DISABLED_REJECTED),
+      rejection(OPUS_DISABLED_REJECTED),
       jsonResponse({ type: "message" }),
       jsonResponse({ type: "message" }),
     )
-    await createAnthropicMessages(
-      payload("model-retry", "disabled"),
-      new Headers(),
-    )
+    const original = payload("disabled")
+    await createNativeMessages(original, new Headers())
     expect(calls).toHaveLength(2)
     expect(sentBody(1).thinking).toEqual({ type: "adaptive" })
     expect(sentBody(1).output_config).toEqual({ effort: "high" })
+    expect(original.thinking).toEqual({ type: "disabled" })
 
-    await createAnthropicMessages(
-      payload("model-retry", "disabled"),
-      new Headers(),
-    )
+    await createNativeMessages(payload("disabled"), new Headers())
     expect(calls).toHaveLength(3)
     expect(sentBody(2).thinking).toEqual({ type: "adaptive" })
   })
 
   test("does not cache the accepted type when the retry fails", async () => {
     mockFetch(
-      thinkingError(OPUS_DISABLED_REJECTED),
-      thinkingError("Another problem."),
-      thinkingError(OPUS_DISABLED_REJECTED),
+      rejection(OPUS_DISABLED_REJECTED),
+      rejection("Another problem."),
+      rejection(OPUS_DISABLED_REJECTED),
       jsonResponse({ type: "message" }),
     )
-    const failed = await createAnthropicMessages(
-      payload("model-no-cache", "disabled"),
+    const failed = await createNativeMessages(
+      payload("disabled"),
       new Headers(),
     ).catch((error: unknown) => error)
     expect(failed).toBeInstanceOf(HTTPError)
 
-    await createAnthropicMessages(
-      payload("model-no-cache", "disabled"),
-      new Headers(),
-    )
+    await createNativeMessages(payload("disabled"), new Headers())
     expect(calls).toHaveLength(4)
     expect(sentBody(2).thinking).toEqual({ type: "disabled" })
   })
 
-  test("returns other errors without a retry", async () => {
+  test("keeps thinking.display and drops budget_tokens in the retry", async () => {
+    mockFetch(rejection(ENABLED_REJECTED), jsonResponse({ type: "message" }))
+    const body = {
+      ...payload("enabled"),
+      thinking: { type: "enabled", budget_tokens: 1024, display: "summarized" },
+    }
+    await createNativeMessages(body, new Headers())
+    expect(sentBody(1).thinking).toEqual({
+      type: "adaptive",
+      display: "summarized",
+    })
+  })
+
+  test("replaces a cached type that Copilot rejects later", async () => {
     mockFetch(
-      new Response('{"type":"error"}', {
-        status: 429,
-        headers: { "content-type": "application/json", "retry-after": "7" },
-      }),
+      rejection(OPUS_DISABLED_REJECTED),
+      jsonResponse({ type: "message" }),
+      rejection(
+        '"thinking.type.adaptive" is not supported for this model. Use "thinking.type.between_tools" instead.',
+      ),
+      jsonResponse({ type: "message" }),
+      jsonResponse({ type: "message" }),
     )
-    const failed = await createAnthropicMessages(
-      payload("model-429", "disabled"),
+    await createNativeMessages(payload("disabled"), new Headers())
+    await createNativeMessages(payload("disabled"), new Headers())
+    await createNativeMessages(payload("disabled"), new Headers())
+    expect(calls).toHaveLength(5)
+    expect(sentBody(2).thinking).toEqual({ type: "adaptive" })
+    expect(sentBody(3).thinking).toEqual({ type: "between_tools" })
+    expect(sentBody(4).thinking).toEqual({ type: "between_tools" })
+  })
+
+  test("does not retry other errors", async () => {
+    mockFetch(jsonResponse({ type: "error" }, 429))
+    const failed = await createNativeMessages(
+      payload("disabled"),
       new Headers(),
     ).catch((error: unknown) => error)
+    expect(failed).toBeInstanceOf(HTTPError)
     expect(calls).toHaveLength(1)
-    if (!(failed instanceof HTTPError)) throw new Error("expected HTTPError")
-    const response = toClientResponse(failed.response)
-    expect(response.status).toBe(429)
-    expect(response.headers.get("retry-after")).toBe("7")
-    expect(await response.text()).toBe('{"type":"error"}')
   })
 
   test("marks agent calls and images inside tool results", async () => {
     mockFetch(jsonResponse({ type: "message" }))
-    await createAnthropicMessages(
+    await createNativeMessages(
       {
         model: "claude-opus-5-5",
         messages: [
@@ -178,7 +208,7 @@ describe("createAnthropicMessages", () => {
 })
 
 describe("shouldUseNativeMessages", () => {
-  const userTurn = [{ role: "user" }]
+  const userTurn = [{ role: "user", content: "hi" }]
 
   test("selects Claude models", () => {
     expect(
@@ -193,7 +223,7 @@ describe("shouldUseNativeMessages", () => {
     expect(
       shouldUseNativeMessages({
         model: "claude-opus-5",
-        messages: [...userTurn, { role: "assistant" }],
+        messages: [...userTurn, { role: "assistant", content: "{" }],
       }),
     ).toBe(false)
   })
@@ -215,16 +245,28 @@ describe("POST /v1/messages", () => {
         headers: { "content-type": "text/event-stream" },
       }),
     )
-    const body = { ...payload("claude-opus-5", "adaptive"), stream: true }
-    const response = await server.request("/v1/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    })
+    const body = { ...payload("adaptive"), max_tokens: 16, stream: true }
+    const response = await postMessages(body)
     expect(calls[0].url).toEndWith("/v1/messages")
     expect(sentBody(0)).toEqual(body)
     expect(response.headers.get("content-type")).toBe("text/event-stream")
     expect(await response.text()).toBe(events)
+  })
+
+  test("returns upstream errors with status, body and retry-after", async () => {
+    mockFetch(
+      new Response('{"type":"error"}', {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "7" },
+      }),
+    )
+    const response = await postMessages({
+      ...payload("adaptive"),
+      max_tokens: 16,
+    })
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("7")
+    expect(await response.text()).toBe('{"type":"error"}')
   })
 
   test("sends other models through /chat/completions", async () => {
@@ -245,14 +287,10 @@ describe("POST /v1/messages", () => {
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
     )
-    const response = await server.request("/v1/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: "gpt-4.1",
-        max_tokens: 16,
-        messages: [{ role: "user", content: "hi" }],
-      }),
+    const response = await postMessages({
+      model: "gpt-4.1",
+      max_tokens: 16,
+      messages: [{ role: "user", content: "hi" }],
     })
     expect(calls[0].url).toEndWith("/chat/completions")
     expect(response.status).toBe(200)
